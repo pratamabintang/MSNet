@@ -129,9 +129,15 @@ class MUSEBackboneDecoder(nn.Module):
     rgb_chans = [64, 128, 320, 512]
     evt_chans = [32, 64, 160, 256]
 
-    def __init__(self, event_backbone_channels, num_classes):
+    def __init__(self, event_backbone_channels, num_classes, rgb_backbone=None, event_backbone=None, pretrained_rgb_path=None, pretrained_evt_path=None):
         super().__init__()
-        self.backbone = DualSegFormerBackbone(event_in_channels=event_backbone_channels)
+        self.backbone = DualSegFormerBackbone(
+            event_in_channels=event_backbone_channels,
+            rgb_backbone=rgb_backbone,
+            event_backbone=event_backbone,
+            pretrained_rgb_path=pretrained_rgb_path,
+            pretrained_evt_path=pretrained_evt_path,
+        )
 
         self.fusion1 = FusionBlock(self.rgb_chans[0], self.evt_chans[0], num_heads=4)
         self.fusion2 = FusionBlock(self.rgb_chans[1], self.evt_chans[1], num_heads=4)
@@ -232,6 +238,52 @@ class DDD17MUSENet(MUSEBackboneDecoder):
         return self._forward_backbone_decoder(rgb, evt, output_size=rgb.shape[2:])
 
 
+class LandslideMUSENet(MUSEBackboneDecoder):
+    """MUSE-Net configured for Landslide Segmentation (RGB + LiDAR Topography).
+
+    Inputs:
+        rgb: Optical RGB imagery [B, 3, H, W]
+        topo: LiDAR topography rasters [B, C_topo, H, W]
+              (e.g., DTM, Slope, Hillshade, Aspect, etc.)
+    """
+
+    def __init__(
+        self,
+        topo_in_channels=1,
+        num_classes=1,
+        use_graph=True,
+        rgb_backbone=None,
+        topo_backbone=None,
+        pretrained_rgb_path=None,
+        pretrained_topo_path=None,
+    ):
+        super().__init__(
+            event_backbone_channels=topo_in_channels,
+            num_classes=num_classes,
+            rgb_backbone=rgb_backbone,
+            event_backbone=topo_backbone,
+            pretrained_rgb_path=pretrained_rgb_path,
+            pretrained_evt_path=pretrained_topo_path,
+        )
+        self.topo_in_channels = topo_in_channels
+        self.use_graph = use_graph
+
+        if use_graph:
+            self.sdgsr = LocalTopoGraphConv(in_channels=topo_in_channels, k_neighbors=9)
+        else:
+            self.sdgsr = nn.Identity()
+
+    def forward(self, rgb, topo):
+        # Numerical stability guard: prevent degenerate zero-variance in SegFormer LayerNorm backward
+        if topo.abs().max() < 1e-7:
+            topo = topo + 1e-6
+
+        if self.use_graph:
+            topo = self.sdgsr(topo)
+
+        return self._forward_backbone_decoder(rgb, topo, output_size=rgb.shape[2:])
+
+
 # Backward-compatible aliases used by older scripts.
 AdvancedMambaRoutingFusion = FusionBlock
 MLP = FeatureProjectionMLP
@@ -243,6 +295,7 @@ __all__ = [
     "DSECMUSENet",
     "FeatureProjectionMLP",
     "FusionBlock",
+    "LandslideMUSENet",
     "MLP",
     "MUSEBackboneDecoder",
     "SegFormerHead",

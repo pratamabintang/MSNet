@@ -1,0 +1,85 @@
+# =============================================================================
+# Python & Bytecode Cache
+# =============================================================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# =============================================================================
+# Datasets & Large Geospatial / Array Files
+# =============================================================================
+datasets/
+data/
+*.tif
+*.tiff
+*.npy
+*.npz
+*.h5
+*.hdf5
+*.zip
+*.tar
+*.tar.gz
+*.7z
+
+# Retain blacklist configuration files if placed inside datasets
+!datasets/**/black_list.txt
+!datasets/**/blacklist.txt
+
+# =============================================================================
+# Model Checkpoints & Pretrained Weights
+# =============================================================================
+checkpoints/
+pretrained/
+*.pth
+*.pt
+*.ckpt
+*.bin
+*.onnx
+*.sh
+
+# =============================================================================
+# Experiment Runs, Logs & TensorBoard Artifacts
+# =============================================================================
+runs/
+logs/
+txt_logs/
+*.log
+
+# =============================================================================
+# Virtual Environments
+# =============================================================================
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# =============================================================================
+# IDE & System Specific
+# =============================================================================
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+.DS_Store
+Thumbs.db
+desktop.ini

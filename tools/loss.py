@@ -49,3 +49,53 @@ class CrossModalContrastiveLoss(nn.Module):
         loss_r2e = F.cross_entropy(sim_matrix.view(-1, H * W), labels.flatten())
         loss_e2r = F.cross_entropy(sim_matrix.transpose(1, 2).reshape(-1, H * W), labels.flatten())
         return (loss_r2e + loss_e2r) * 0.5
+
+
+def structure_loss(pred: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+    """Structure loss: Weighted Binary Cross-Entropy + Weighted IoU.
+
+    Applies boundary-focused weighting using average pooling deviation.
+    """
+    pred = pred.float()
+    mask = mask.float()
+    weit = 1 + 5 * torch.abs(F.avg_pool2d(mask, kernel_size=31, stride=1, padding=15) - mask)
+    wbce = F.binary_cross_entropy_with_logits(pred, mask, reduction="none")
+    wbce = (weit * wbce).sum(dim=(2, 3)) / (weit.sum(dim=(2, 3)) + 1e-8)
+    pred_sig = torch.sigmoid(pred)
+    inter = ((pred_sig * mask) * weit).sum(dim=(2, 3))
+    union = ((pred_sig + mask) * weit).sum(dim=(2, 3))
+    wiou = 1 - (inter + 1) / (union - inter + 1)
+    return (wbce + wiou).mean()
+
+
+def compute_iou(pred: torch.Tensor, mask: torch.Tensor, threshold: float = 0.5) -> float:
+    """Computes binary IoU score between prediction and ground truth."""
+    pred_bin = (torch.sigmoid(pred) >= threshold).float()
+    inter = (pred_bin * mask).sum().item()
+    union = (pred_bin + mask).clamp(0, 1).sum().item()
+    if union == 0:
+        return 1.0 if inter == 0 else 0.0
+    return inter / (union + 1e-7)
+
+
+def compute_metrics(pred: torch.Tensor, mask: torch.Tensor, threshold: float = 0.5) -> dict:
+    """Computes comprehensive segmentation metrics (IoU, F1/Dice, Precision, Recall)."""
+    pred_bin = (torch.sigmoid(pred) >= threshold).float()
+    inter = (pred_bin * mask).sum().item()
+    union = (pred_bin + mask).clamp(0, 1).sum().item()
+    iou = inter / (union + 1e-7) if union > 0 else (1.0 if inter == 0 else 0.0)
+
+    tp = inter
+    fp = (pred_bin * (1.0 - mask)).sum().item()
+    fn = ((1.0 - pred_bin) * mask).sum().item()
+
+    precision = tp / (tp + fp + 1e-7)
+    recall = tp / (tp + fn + 1e-7)
+    f1 = 2.0 * precision * recall / (precision + recall + 1e-7)
+
+    return {
+        "iou": iou,
+        "f1": f1,
+        "precision": precision,
+        "recall": recall,
+    }

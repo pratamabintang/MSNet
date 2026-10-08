@@ -302,11 +302,11 @@ def mit_b2(in_chans=3, **kwargs):
     return model
 
 class DualSegFormerBackbone(nn.Module):
-    def __init__(self, event_in_channels=12):
+    def __init__(self, event_in_channels=12, rgb_backbone=None, event_backbone=None, pretrained_rgb_path=None, pretrained_evt_path=None):
         super().__init__()
 
         # 1. RGB Branch
-        rgb_type = getattr(config, 'RGB_BACKBONE', 'b2')
+        rgb_type = rgb_backbone or getattr(config, 'RGB_BACKBONE', 'b2')
         print(f"[DualBackbone] Initializing RGB Branch: SegFormer-{rgb_type.upper()}")
 
         if rgb_type == 'b0':
@@ -314,10 +314,12 @@ class DualSegFormerBackbone(nn.Module):
         else:
             self.rgb_net = mit_b2(in_chans=3)
 
-        self._load_pretrained_mapped(self.rgb_net, config.PRETRAINED_RGB_PATH)
+        path_rgb = pretrained_rgb_path if pretrained_rgb_path is not None else getattr(config, 'PRETRAINED_RGB_PATH', None)
+        if path_rgb is not None:
+            self._load_pretrained_mapped(self.rgb_net, path_rgb)
 
         # 2. Event Branch
-        evt_type = getattr(config, 'EVENT_BACKBONE', 'b0')
+        evt_type = event_backbone or getattr(config, 'EVENT_BACKBONE', 'b0')
         print(f"[DualBackbone] Initializing Event Branch: SegFormer-{evt_type.upper()}")
 
         if evt_type == 'b0':
@@ -326,7 +328,9 @@ class DualSegFormerBackbone(nn.Module):
             self.evt_net = mit_b2(in_chans=event_in_channels)
 
         print(f"[Optimization] Loading Pretrained weights for Event Branch ({evt_type.upper()})...")
-        self._load_pretrained_mapped(self.evt_net, config.PRETRAINED_EVT_PATH)
+        path_evt = pretrained_evt_path if pretrained_evt_path is not None else getattr(config, 'PRETRAINED_EVT_PATH', None)
+        if path_evt is not None:
+            self._load_pretrained_mapped(self.evt_net, path_evt)
 
         nn.init.kaiming_normal_(self.evt_net.patch_embed1.proj.weight, mode='fan_out', nonlinearity='relu')
         if self.evt_net.patch_embed1.proj.bias is not None:
