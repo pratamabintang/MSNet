@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import os
+import sys
 import math
 from pathlib import Path
 from functools import partial
@@ -341,101 +342,129 @@ class DualSegFormerBackbone(nn.Module):
         path = str(path)
         actual_file = None
         if os.path.isdir(path):
-            candidates = sorted(list(Path(path).glob("*.pth")) + list(Path(path).glob("*.pt")))
+            dir_path = Path(path)
+            patterns = ["*.safetensors", "*.pth", "*.pt", "*.bin"]
+            candidates = []
+            for pat in patterns:
+                candidates.extend(sorted(list(dir_path.glob(pat))))
             if candidates:
-                preferred = [c for c in candidates if "mit_" in c.name.lower()]
-                actual_file = str(preferred[0] if preferred else candidates[0])
+                # Prioritize: 1. Files containing 'mit_', 'segformer', 'model' AND ending with .safetensors
+                #             2. Any .safetensors file
+                #             3. Any candidate matching 'mit_', 'segformer', 'model'
+                #             4. First candidate
+                preferred_safe = [c for c in candidates if c.suffix.lower() == ".safetensors" and any(k in c.name.lower() for k in ["mit_", "segformer", "model"])]
+                all_safe = [c for c in candidates if c.suffix.lower() == ".safetensors"]
+                preferred_other = [c for c in candidates if any(k in c.name.lower() for k in ["mit_", "segformer", "model"])]
+
+                if preferred_safe:
+                    actual_file = str(preferred_safe[0])
+                elif all_safe:
+                    actual_file = str(all_safe[0])
+                elif preferred_other:
+                    actual_file = str(preferred_other[0])
+                else:
+                    actual_file = str(candidates[0])
             else:
-                print(f"[Warning] No .pth or .pt weight file found inside directory '{path}'. Training from scratch.")
+                print(f"[Warning] No weight file (.safetensors, .pth, .pt, .bin) found inside directory '{path}'. Training from scratch.")
                 return
         elif os.path.isfile(path):
             actual_file = path
+        elif os.path.isfile(path + ".safetensors"):
+            actual_file = path + ".safetensors"
         elif os.path.isfile(path + ".pth"):
             actual_file = path + ".pth"
         elif os.path.isfile(path + ".pt"):
             actual_file = path + ".pt"
+        elif os.path.isfile(path + ".bin"):
+            actual_file = path + ".bin"
         else:
             print(f"[Warning] Weights not found at '{path}'. Training from scratch.")
             return
 
         print(f"[Smart Load] Loading weights from: {actual_file}")
         try:
-            checkpoint = torch.load(actual_file, map_location='cpu')
-            if 'state_dict' in checkpoint:
+            if actual_file.endswith(".safetensors"):
+                try:
+                    from safetensors.torch import load_file
+                except ImportError:
+                    import subprocess
+                    print("[Smart Load] Installing 'safetensors' package...")
+                    subprocess.check_call([sys.executable, "-m", "pip", "install", "safetensors"])
+                    from safetensors.torch import load_file
+                checkpoint = load_file(actual_file, device="cpu")
+            else:
+                checkpoint = torch.load(actual_file, map_location='cpu')
+
+            if isinstance(checkpoint, dict) and 'state_dict' in checkpoint:
                 sd = checkpoint['state_dict']
-            elif 'model' in checkpoint:
+            elif isinstance(checkpoint, dict) and 'model' in checkpoint:
                 sd = checkpoint['model']
             else:
                 sd = checkpoint
 
             new_sd = OrderedDict()
             mapped_count = 0
-
             temp_store = {}
 
             for k, v in sd.items():
-                if k.startswith('decode_head'):
+                if any(k.startswith(p) for p in ['decode_head', 'classifier', 'cls_head', 'head']):
                     continue
 
                 new_k = k
-                if new_k.startswith('segformer.encoder.'):
-                    new_k = new_k.replace('segformer.encoder.', '')
+                for prefix in ['segformer.encoder.', 'encoder.', 'model.encoder.', 'model.', 'backbone.', 'segformer.']:
+                    if new_k.startswith(prefix):
+                        new_k = new_k[len(prefix):]
+                        break
 
-                if 'patch_embeddings.0' in new_k:
-                    new_k = new_k.replace('patch_embeddings.0', 'patch_embed1')
-                elif 'patch_embeddings.1' in new_k:
-                    new_k = new_k.replace('patch_embeddings.1', 'patch_embed2')
-                elif 'patch_embeddings.2' in new_k:
-                    new_k = new_k.replace('patch_embeddings.2', 'patch_embed3')
-                elif 'patch_embeddings.3' in new_k:
-                    new_k = new_k.replace('patch_embeddings.3', 'patch_embed4')
+                for idx in range(4):
+                    new_k = new_k.replace(f'patch_embeddings.{idx}', f'patch_embed{idx+1}')
+                    new_k = new_k.replace(f'block.{idx}.', f'block{idx+1}.')
+                    new_k = new_k.replace(f'layers.{idx}.', f'block{idx+1}.')
+                    new_k = new_k.replace(f'stages.{idx}.', f'block{idx+1}.')
+                    new_k = new_k.replace(f'layer_norm.{idx}', f'norm{idx+1}')
 
                 if 'patch_embed' in new_k and 'layer_norm' in new_k:
                     new_k = new_k.replace('layer_norm', 'norm')
 
-                if 'block.0.' in new_k:
-                    new_k = new_k.replace('block.0.', 'block1.')
-                elif 'block.1.' in new_k:
-                    new_k = new_k.replace('block.1.', 'block2.')
-                elif 'block.2.' in new_k:
-                    new_k = new_k.replace('block.2.', 'block3.')
-                elif 'block.3.' in new_k:
-                    new_k = new_k.replace('block.3.', 'block4.')
+                new_k = new_k.replace('layer_norm_1', 'norm1')
+                new_k = new_k.replace('layer_norm_2', 'norm2')
+                new_k = new_k.replace('mlp.dense1', 'mlp.fc1')
+                new_k = new_k.replace('mlp.dense2', 'mlp.fc2')
+                if 'mlp.dwconv.weight' in new_k and 'dwconv.dwconv' not in new_k:
+                    new_k = new_k.replace('mlp.dwconv.weight', 'mlp.dwconv.dwconv.weight')
+                if 'mlp.dwconv.bias' in new_k and 'dwconv.dwconv' not in new_k:
+                    new_k = new_k.replace('mlp.dwconv.bias', 'mlp.dwconv.dwconv.bias')
 
-                if 'layer_norm.0' in new_k:
-                    new_k = new_k.replace('layer_norm.0', 'norm1')
-                elif 'layer_norm.1' in new_k:
-                    new_k = new_k.replace('layer_norm.1', 'norm2')
-                elif 'layer_norm.2' in new_k:
-                    new_k = new_k.replace('layer_norm.2', 'norm3')
-                elif 'layer_norm.3' in new_k:
-                    new_k = new_k.replace('layer_norm.3', 'norm4')
+                if 'attention.self.' in new_k:
+                    new_k = new_k.replace('attention.self.', 'attention.')
 
-                if 'layer_norm_1' in new_k: new_k = new_k.replace('layer_norm_1', 'norm1')
-                if 'layer_norm_2' in new_k: new_k = new_k.replace('layer_norm_2', 'norm2')
-                if 'mlp.dense1' in new_k: new_k = new_k.replace('mlp.dense1', 'mlp.fc1')
-                if 'mlp.dense2' in new_k: new_k = new_k.replace('mlp.dense2', 'mlp.fc2')
-
-                if 'attention.self.query' in new_k:
-                    new_k = new_k.replace('attention.self.query', 'attn.q')
+                if 'attention.query' in new_k or 'attn.query' in new_k:
+                    new_k = new_k.replace('attention.query', 'attn.q').replace('attn.query', 'attn.q')
                     new_sd[new_k] = v
-                elif 'attention.self.key' in new_k:
-                    temp_key = new_k.replace('attention.self.key', 'attn.kv')
-
-                    if temp_key not in temp_store: temp_store[temp_key] = {}
+                elif 'attention.key' in new_k or 'attn.key' in new_k:
+                    temp_key = new_k.replace('attention.key', 'attn.kv').replace('attn.key', 'attn.kv')
+                    if temp_key not in temp_store:
+                        temp_store[temp_key] = {}
                     temp_store[temp_key]['key'] = v
-                elif 'attention.self.value' in new_k:
-                    temp_key = new_k.replace('attention.self.value', 'attn.kv')
-                    if temp_key not in temp_store: temp_store[temp_key] = {}
+                elif 'attention.value' in new_k or 'attn.value' in new_k:
+                    temp_key = new_k.replace('attention.value', 'attn.kv').replace('attn.value', 'attn.kv')
+                    if temp_key not in temp_store:
+                        temp_store[temp_key] = {}
                     temp_store[temp_key]['value'] = v
-                elif 'attention.output.dense' in new_k:
-                    new_k = new_k.replace('attention.output.dense', 'attn.proj')
+                elif 'attention.output.dense' in new_k or 'attention.dense' in new_k:
+                    new_k = new_k.replace('attention.output.dense', 'attn.proj').replace('attention.dense', 'attn.proj')
                     new_sd[new_k] = v
-                elif 'attention.self.sr' in new_k:
-                    new_k = new_k.replace('attention.self.sr', 'attn.sr')
+                elif 'attention.proj' in new_k:
+                    new_k = new_k.replace('attention.proj', 'attn.proj')
                     new_sd[new_k] = v
-                elif 'attention.self.layer_norm' in new_k:
-                    new_k = new_k.replace('attention.self.layer_norm', 'attn.norm')
+                elif 'attention.sr' in new_k:
+                    new_k = new_k.replace('attention.sr', 'attn.sr')
+                    new_sd[new_k] = v
+                elif 'attention.layer_norm' in new_k:
+                    new_k = new_k.replace('attention.layer_norm', 'attn.norm')
+                    new_sd[new_k] = v
+                elif 'attention.norm' in new_k:
+                    new_k = new_k.replace('attention.norm', 'attn.norm')
                     new_sd[new_k] = v
                 else:
                     new_sd[new_k] = v
@@ -459,14 +488,14 @@ class DualSegFormerBackbone(nn.Module):
             msg = model.load_state_dict(filtered_dict, strict=False)
 
             real_missing = [k for k in msg.missing_keys if "head" not in k and "decode" not in k]
-            print(f"[Smart Load] Auto-converted and loaded {len(filtered_dict)} keys.")
+            print(f"[Smart Load] Auto-converted and loaded {len(filtered_dict)}/{len(model_state)} keys.")
             if len(real_missing) > 0:
-                print(f"[Smart Load] Still missing {len(real_missing)} keys (e.g. {real_missing[:3]}).")
+                print(f"[Smart Load] Unmatched {len(real_missing)} keys (e.g. {real_missing[:3]}).")
             else:
-                print("[Smart Load] Perfect match.")
+                print("[Smart Load] Perfect match (100% backbone weights loaded).")
 
         except Exception as e:
-            print(f"Weight loading failed: {e}")
+            print(f"[Smart Load] Weight loading failed: {e}")
 
     def forward(self, rgb, evt):
         rgb_feats = self.rgb_net(rgb)

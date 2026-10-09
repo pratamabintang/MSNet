@@ -8,3 +8,4 @@ tqdm
 tensorboard
 scipy            # tools/preprocess_align.py (DSEC calibration)
 pyyaml           # tools/preprocess_align.py (DSEC calibration)
+safetensors
