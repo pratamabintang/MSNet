@@ -47,6 +47,9 @@ def get_landslide_dataloaders(
     num_workers: int = 0,
     size: Optional[int] = None,
     skip_shape_check: bool = True,
+    data_dir: Optional[str] = None,
+    blacklist_path: Optional[str] = None,
+    split_paths: Optional[dict] = None,
 ):
     """Creates a PyTorch DataLoader for the multi-modal Landslide dataset.
 
@@ -59,14 +62,17 @@ def get_landslide_dataloaders(
     mods = modalities if modalities is not None else config.MODALITIES
     target_size = size if size is not None else config.IMG_SIZE
     mode_flag = run_mode if run_mode is not None else getattr(config, "RUN_MODE", "real")
+    d_dir = data_dir if data_dir is not None else str(config.DATA_DIR)
+    b_path = blacklist_path if blacklist_path is not None else str(config.BLACKLIST_PATH)
 
     dataset = LandslideDataset(
-        data_dir=str(config.DATA_DIR),
+        data_dir=d_dir,
         split=split,
         size=target_size,
         modalities=mods,
-        blacklist_path=str(config.BLACKLIST_PATH),
+        blacklist_path=b_path,
         skip_shape_check=skip_shape_check,
+        split_paths=split_paths,
     )
 
     is_train = split == "train"

@@ -46,7 +46,7 @@ def parse_args():
     parser.add_argument("--batch_size", type=int, default=None, help="Override batch size")
     parser.add_argument("--lr", type=float, default=None, help="Override learning rate")
     parser.add_argument("--modalities", type=str, default=None, help="Comma-separated modalities, e.g. 'IMAGE,DTM,SLOPE,HILLSHADE'")
-    parser.add_argument("--run_mode", type=str, default="real", help="'real' (100% Topo), 'zero'/'zeroo' (0% Topo ablation), 'all'")
+    parser.add_argument("--run_mode", type=str, default="real", help="'real' (100%% Topo), 'zero'/'zeroo' (0%% Topo ablation), 'all'")
     parser.add_argument("--use_graph", type=lambda x: str(x).lower() == "true", default=True, help="Enable/disable SDGSR graph convolution")
     parser.add_argument("--eval_interval", type=int, default=1, help="Run evaluation every N epochs (default: 1)")
     parser.add_argument("--save_interval", type=int, default=5, help="Save persistent checkpoint every N epochs (default: 5)")
@@ -56,6 +56,21 @@ def parse_args():
     parser.add_argument("--skip_shape_check", type=lambda x: str(x).lower() in ("true", "1", "yes"), default=True, help="Skip raster shape checking")
     parser.add_argument("--resume", action="store_true", help="Resume from latest_checkpoint.pth")
     parser.add_argument("--data_dir", type=str, default=None, help="Dataset directory path")
+    parser.add_argument("--blacklist_path", "--black_list_path", dest="blacklist_path", type=str, default=None, help="Path to blacklist file (e.g. black_list.txt)")
+    parser.add_argument("--output_dir", "--output_training_path", dest="output_dir", type=str, default=None, help="Output directory for runs and training logs")
+    parser.add_argument("--checkpoint_dir", "--checkpoint_path", "--ckpt_dir", dest="checkpoint_dir", type=str, default=None, help="Directory to save model checkpoints")
+    parser.add_argument("--pretrained_rgb", type=str, default=None, help="Pretrained weights path for RGB SegFormer (e.g. mit_b2.pth)")
+    parser.add_argument("--pretrained_topo", type=str, default=None, help="Pretrained weights path for Topo SegFormer (e.g. mit_b0.pth)")
+    parser.add_argument("--train_image_path", type=str, default=None, help="Direct path to train IMAGE directory")
+    parser.add_argument("--train_mask_path", type=str, default=None, help="Direct path to train LABEL/MASK directory")
+    parser.add_argument("--train_dtm_path", type=str, default=None, help="Direct path to train DTM directory")
+    parser.add_argument("--train_slope_path", type=str, default=None, help="Direct path to train SLOPE directory")
+    parser.add_argument("--train_hillshade_path", type=str, default=None, help="Direct path to train HILLSHADE directory")
+    parser.add_argument("--val_image_path", type=str, default=None, help="Direct path to val IMAGE directory")
+    parser.add_argument("--val_mask_path", type=str, default=None, help="Direct path to val LABEL/MASK directory")
+    parser.add_argument("--val_dtm_path", type=str, default=None, help="Direct path to val DTM directory")
+    parser.add_argument("--val_slope_path", type=str, default=None, help="Direct path to val SLOPE directory")
+    parser.add_argument("--val_hillshade_path", type=str, default=None, help="Direct path to val HILLSHADE directory")
     parser.add_argument("--device", type=str, default=None, help="Compute device, e.g. 'cuda:0' or 'cpu'")
     parser.add_argument("--num_workers", type=int, default=2, help="DataLoader workers")
     return parser.parse_args()
@@ -179,6 +194,15 @@ def run_training(run_mode="real"):
     if args.data_dir is not None:
         config.DATA_DIR = Path(args.data_dir)
         config.BLACKLIST_PATH = config.DATA_DIR / "black_list.txt"
+    if args.blacklist_path is not None:
+        config.BLACKLIST_PATH = Path(args.blacklist_path)
+    if args.output_dir is not None:
+        config.RUNS_DIR = Path(args.output_dir)
+    custom_ckpt_root = Path(args.checkpoint_dir) if args.checkpoint_dir is not None else None
+    if args.pretrained_rgb is not None:
+        config.PRETRAINED_RGB_PATH = Path(args.pretrained_rgb)
+    if args.pretrained_topo is not None:
+        config.PRETRAINED_TOPO_PATH = Path(args.pretrained_topo)
     if args.modalities is not None:
         config.MODALITIES = [m.strip().upper() for m in args.modalities.split(",")]
         config.TOPO_INPUT_CHANS = max(1, len([m for m in config.MODALITIES if m != "IMAGE"]))
@@ -207,18 +231,41 @@ def run_training(run_mode="real"):
         # "auto": prefer bfloat16 if GPU natively supports it, else float16
         target_amp_dtype = torch.bfloat16 if (torch.cuda.is_available() and torch.cuda.is_bf16_supported()) else torch.float16
 
-    # Set up logging directories
+    # Set up single unified experiment subfolder inside OUTPUT_TRAINING_PATH
     run_suffix = f"_{mode.upper()}_Topo{config.TOPO_INPUT_CHANS}ch"
-    log_dir = config.LOG_DIR.parent / (config.PROJECT_NAME + run_suffix)
-    txt_log_dir = config.TXT_LOG_DIR.parent / (config.PROJECT_NAME + run_suffix)
-    ckpt_dir = config.CKPT_DIR.parent / (config.PROJECT_NAME + run_suffix)
+    exp_name = config.PROJECT_NAME + run_suffix
+    exp_dir = config.RUNS_DIR / exp_name
 
-    for p in [log_dir, txt_log_dir, ckpt_dir]:
+    # Checkpoints, logs, and txt_logs all reside within this same experiment subfolder
+    if custom_ckpt_root is not None:
+        ckpt_dir = custom_ckpt_root / exp_name / "checkpoints"
+    else:
+        ckpt_dir = exp_dir / "checkpoints"
+
+    log_dir = exp_dir / "logs"
+    txt_log_dir = exp_dir / "txt_logs"
+
+    for p in [exp_dir, ckpt_dir, log_dir, txt_log_dir]:
         p.mkdir(parents=True, exist_ok=True)
 
     timestamp = time.strftime("%Y%m%d_%H%M%S")
     sys.stdout = Logger(txt_log_dir / f"train_{timestamp}.log")
     writer = SummaryWriter(log_dir=str(log_dir))
+
+    # Map individual split paths if passed via arguments
+    train_paths = {}
+    if args.train_image_path: train_paths["IMAGE"] = args.train_image_path
+    if args.train_mask_path: train_paths["LABEL"] = args.train_mask_path
+    if args.train_dtm_path: train_paths["DTM"] = args.train_dtm_path
+    if args.train_slope_path: train_paths["SLOPE"] = args.train_slope_path
+    if args.train_hillshade_path: train_paths["HILLSHADE"] = args.train_hillshade_path
+
+    val_paths = {}
+    if args.val_image_path: val_paths["IMAGE"] = args.val_image_path
+    if args.val_mask_path: val_paths["LABEL"] = args.val_mask_path
+    if args.val_dtm_path: val_paths["DTM"] = args.val_dtm_path
+    if args.val_slope_path: val_paths["SLOPE"] = args.val_slope_path
+    if args.val_hillshade_path: val_paths["HILLSHADE"] = args.val_hillshade_path
 
     print(f"\n=======================================================")
     print(f"  MUSE-Net: Cross-Modal Landslide Semantic Segmentation")
@@ -227,6 +274,7 @@ def run_training(run_mode="real"):
     print(f"  Run Mode:         {mode.upper()} ({'0% Topo Ablation' if mode == 'zero' else '100% Real Topo'})")
     print(f"  Modalities:       {config.MODALITIES}")
     print(f"  LiDAR Topo Chans: {config.TOPO_INPUT_CHANS}")
+    print(f"  Blacklist:        {config.BLACKLIST_PATH}")
     print(f"  SDGSR Graph:      {config.USE_GRAPH}")
     print(f"  AMP Enabled:      {args.amp} (Dtype: {target_amp_dtype})")
     print(f"  Eval Interval:    Setiap {args.eval_interval} epoch")
@@ -236,6 +284,7 @@ def run_training(run_mode="real"):
     print(f"  Batch Size:       {config.BATCH_SIZE}")
     print(f"  Learning Rate:    {config.LEARNING_RATE}")
     print(f"  Epochs:           {config.EPOCHS}")
+    print(f"  Output Dir:       {exp_dir}")
     print(f"  Checkpoints:      {ckpt_dir}")
     print(f"=======================================================\n")
 
@@ -247,6 +296,9 @@ def run_training(run_mode="real"):
         run_mode=mode,
         num_workers=args.num_workers,
         skip_shape_check=args.skip_shape_check,
+        data_dir=str(config.DATA_DIR),
+        blacklist_path=str(config.BLACKLIST_PATH),
+        split_paths=train_paths if train_paths else None,
     )
     val_loader = get_landslide_dataloaders(
         "val",
@@ -255,6 +307,9 @@ def run_training(run_mode="real"):
         run_mode=mode,
         num_workers=args.num_workers,
         skip_shape_check=args.skip_shape_check,
+        data_dir=str(config.DATA_DIR),
+        blacklist_path=str(config.BLACKLIST_PATH),
+        split_paths=val_paths if val_paths else None,
     )
 
     # Instantiate Model
@@ -262,6 +317,8 @@ def run_training(run_mode="real"):
         topo_in_channels=config.TOPO_INPUT_CHANS,
         num_classes=config.NUM_CLASSES,
         use_graph=config.USE_GRAPH,
+        pretrained_rgb_path=config.PRETRAINED_RGB_PATH,
+        pretrained_topo_path=config.PRETRAINED_TOPO_PATH,
     ).to(device)
 
     total_params = sum(p.numel() for p in model.parameters() if p.requires_grad) / 1e6

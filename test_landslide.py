@@ -54,6 +54,11 @@ def evaluate_test():
     parser.add_argument("--device", type=str, default=None, help="Compute device, e.g. 'cuda:0' or 'cpu'")
     parser.add_argument("--save_vis", action="store_true", default=True, help="Save evaluation overlay visualizations")
     parser.add_argument("--data_dir", type=str, default=None, help="Dataset directory path")
+    parser.add_argument("--blacklist_path", "--black_list_path", dest="blacklist_path", type=str, default=None, help="Path to blacklist file")
+    parser.add_argument("--output_dir", "--output_training_path", dest="output_dir", type=str, default=None, help="Output directory for predictions")
+    parser.add_argument("--val_image_path", "--image_path", dest="image_path", type=str, default=None, help="Direct path to validation IMAGE folder")
+    parser.add_argument("--val_mask_path", "--mask_path", dest="mask_path", type=str, default=None, help="Direct path to validation LABEL/MASK folder")
+    parser.add_argument("--val_dtm_path", "--dtm_path", dest="dtm_path", type=str, default=None, help="Direct path to validation DTM folder")
     args = parser.parse_args()
 
     device_str = args.device or ("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -62,6 +67,12 @@ def evaluate_test():
     if args.data_dir is not None:
         config.DATA_DIR = Path(args.data_dir)
         config.BLACKLIST_PATH = config.DATA_DIR / "black_list.txt"
+
+    if args.blacklist_path is not None:
+        config.BLACKLIST_PATH = Path(args.blacklist_path)
+
+    if args.output_dir is not None:
+        config.RUNS_DIR = Path(args.output_dir)
 
     if args.modalities is not None:
         config.MODALITIES = [m.strip().upper() for m in args.modalities.split(",")]
@@ -101,8 +112,11 @@ def evaluate_test():
     model.eval()
 
     if ckpt_path.exists():
-        parent_name = ckpt_path.parent.name
-        vis_dir = config.RUNS_DIR.parent / parent_name / f"predictions_vis_{args.split}"
+        if ckpt_path.parent.name == "checkpoints":
+            exp_folder = ckpt_path.parent.parent
+        else:
+            exp_folder = ckpt_path.parent
+        vis_dir = exp_folder / f"predictions_vis_{args.split}"
     else:
         vis_dir = config.RUNS_DIR / f"predictions_vis_{args.split}"
 
@@ -110,7 +124,20 @@ def evaluate_test():
         vis_dir.mkdir(parents=True, exist_ok=True)
         print(f"[Visualizations] Saving to: {vis_dir}")
 
-    loader = get_landslide_dataloaders(split=args.split, batch_size=1, modalities=config.MODALITIES, num_workers=0)
+    val_paths = {}
+    if args.image_path: val_paths["IMAGE"] = args.image_path
+    if args.mask_path: val_paths["LABEL"] = args.mask_path
+    if args.dtm_path: val_paths["DTM"] = args.dtm_path
+
+    loader = get_landslide_dataloaders(
+        split=args.split,
+        batch_size=1,
+        modalities=config.MODALITIES,
+        num_workers=0,
+        data_dir=str(config.DATA_DIR),
+        blacklist_path=str(config.BLACKLIST_PATH),
+        split_paths=val_paths if val_paths else None,
+    )
 
     total_iou = 0.0
     total_f1 = 0.0

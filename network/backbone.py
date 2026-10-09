@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import os
 import math
+from pathlib import Path
 from functools import partial
 from timm.layers import DropPath, to_2tuple, trunc_normal_
 from configs.config import config
@@ -338,13 +339,28 @@ class DualSegFormerBackbone(nn.Module):
 
     def _load_pretrained_mapped(self, model, path):
         path = str(path)
-        if not os.path.exists(path):
-            print(f"[Warning] Weights not found at {path}. Training from scratch.")
+        actual_file = None
+        if os.path.isdir(path):
+            candidates = sorted(list(Path(path).glob("*.pth")) + list(Path(path).glob("*.pt")))
+            if candidates:
+                preferred = [c for c in candidates if "mit_" in c.name.lower()]
+                actual_file = str(preferred[0] if preferred else candidates[0])
+            else:
+                print(f"[Warning] No .pth or .pt weight file found inside directory '{path}'. Training from scratch.")
+                return
+        elif os.path.isfile(path):
+            actual_file = path
+        elif os.path.isfile(path + ".pth"):
+            actual_file = path + ".pth"
+        elif os.path.isfile(path + ".pt"):
+            actual_file = path + ".pt"
+        else:
+            print(f"[Warning] Weights not found at '{path}'. Training from scratch.")
             return
 
-        print(f"[Smart Load] Loading weights from: {path}")
+        print(f"[Smart Load] Loading weights from: {actual_file}")
         try:
-            checkpoint = torch.load(path, map_location='cpu')
+            checkpoint = torch.load(actual_file, map_location='cpu')
             if 'state_dict' in checkpoint:
                 sd = checkpoint['state_dict']
             elif 'model' in checkpoint:

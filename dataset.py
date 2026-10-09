@@ -1,5 +1,6 @@
 import os
 import random
+from pathlib import Path
 from typing import List, Optional, Tuple, Dict, Any
 
 import numpy as np
@@ -63,6 +64,7 @@ class LandslideDataset(Dataset):
         mode: Optional[str] = None,
         skip_size_check: bool = True,
         skip_shape_check: bool = True,
+        split_paths: Optional[Dict[str, str]] = None,
         **kwargs,
     ):
         super().__init__()
@@ -71,6 +73,11 @@ class LandslideDataset(Dataset):
         self.target_size = size
         self.mode = mode if mode is not None else ("train" if split == "train" else "val")
         self.skip_size_check = skip_size_check or skip_shape_check
+        self.custom_paths = {}
+        if split_paths:
+            for k, v in split_paths.items():
+                if v and os.path.exists(str(v)):
+                    self.custom_paths[k.upper()] = str(v)
 
         if modalities is None:
             self.modalities = ["IMAGE"]
@@ -83,18 +90,22 @@ class LandslideDataset(Dataset):
                     f"Modality '{m}' is not supported. Supported: {self.SUPPORTED_MODALITIES}"
                 )
 
-        if os.path.isdir(os.path.join(data_dir, split)):
+        if "IMAGE" in self.custom_paths:
+            image_dir = self.custom_paths["IMAGE"]
+            self.split_dir = str(Path(image_dir).parent)
+        elif os.path.isdir(os.path.join(data_dir, split)):
             self.split_dir = os.path.join(data_dir, split)
+            image_dir = os.path.join(self.split_dir, "IMAGE")
         elif os.path.isdir(data_dir):
             self.split_dir = data_dir
+            image_dir = os.path.join(self.split_dir, "IMAGE")
         else:
             raise FileNotFoundError(f"Split directory not found for data_dir='{data_dir}', split='{split}'")
 
         self.blacklist = load_blacklist(blacklist_path)
 
-        image_dir = os.path.join(self.split_dir, "IMAGE")
         if not os.path.exists(image_dir):
-            raise FileNotFoundError(f"IMAGE directory missing in {self.split_dir}")
+            raise FileNotFoundError(f"IMAGE directory missing in {image_dir}")
 
         all_files = sorted(os.listdir(image_dir))
         self.samples = []
@@ -165,15 +176,38 @@ class LandslideDataset(Dataset):
 
         return rgb
 
+    def _find_file_in_dir(self, directory: str, stem: str, preferred_ext: str) -> Optional[str]:
+        alt_ext = ".tif" if preferred_ext == ".png" else ".png"
+        for ext in [preferred_ext, alt_ext]:
+            cand = os.path.join(directory, stem + ext)
+            if os.path.exists(cand):
+                return cand
+        return None
+
     def _load_modality(self, sample_name: str, modality: str) -> torch.Tensor:
         """Loads and normalizes an individual raster modality as a PyTorch Tensor."""
         ext = ".png" if modality == "IMAGE" else ".tif"
-        file_path = os.path.join(self.split_dir, modality, sample_name + ext)
-        if not os.path.exists(file_path):
-            alt_ext = ".tif" if ext == ".png" else ".png"
-            file_path = os.path.join(self.split_dir, modality, sample_name + alt_ext)
-            if not os.path.exists(file_path):
-                raise FileNotFoundError(f"File for modality '{modality}' not found for sample '{sample_name}'")
+        file_path = None
+
+        if hasattr(self, "custom_paths") and modality.upper() in self.custom_paths:
+            file_path = self._find_file_in_dir(self.custom_paths[modality.upper()], sample_name, ext)
+
+        if file_path is None:
+            # Check standard directory and common aliases (e.g., DTM_NORM, DTM, Slope, etc.)
+            cand_dirs = [
+                os.path.join(self.split_dir, modality),
+                os.path.join(self.split_dir, f"{modality}_NORM"),
+                os.path.join(self.split_dir, modality.lower()),
+                os.path.join(self.split_dir, f"{modality.lower()}_norm"),
+            ]
+            for c_dir in cand_dirs:
+                if os.path.isdir(c_dir):
+                    file_path = self._find_file_in_dir(c_dir, sample_name, ext)
+                    if file_path:
+                        break
+
+        if file_path is None or not os.path.exists(file_path):
+            raise FileNotFoundError(f"File for modality '{modality}' not found for sample '{sample_name}' in {self.split_dir}")
 
         if modality == "IMAGE":
             img = Image.open(file_path)
@@ -246,11 +280,30 @@ class LandslideDataset(Dataset):
 
     def _load_label(self, sample_name: str) -> torch.Tensor:
         """Loads ground truth binary landslide label mask as float tensor {0.0, 1.0}."""
-        label_path = os.path.join(self.split_dir, "LABEL", sample_name + ".png")
-        if not os.path.exists(label_path):
-            label_path = os.path.join(self.split_dir, "LABEL", sample_name + ".tif")
-            if not os.path.exists(label_path):
-                raise FileNotFoundError(f"Label file not found for sample '{sample_name}'")
+        label_path = None
+        if hasattr(self, "custom_paths"):
+            for key in ["LABEL", "MASK", "LABEL_NORM"]:
+                if key in self.custom_paths:
+                    label_path = self._find_file_in_dir(self.custom_paths[key], sample_name, ".png")
+                    if label_path:
+                        break
+
+        if label_path is None:
+            cand_dirs = [
+                os.path.join(self.split_dir, "LABEL"),
+                os.path.join(self.split_dir, "LABEL_NORM"),
+                os.path.join(self.split_dir, "MASK"),
+                os.path.join(self.split_dir, "label"),
+                os.path.join(self.split_dir, "mask"),
+            ]
+            for c_dir in cand_dirs:
+                if os.path.isdir(c_dir):
+                    label_path = self._find_file_in_dir(c_dir, sample_name, ".png")
+                    if label_path:
+                        break
+
+        if label_path is None or not os.path.exists(label_path):
+            raise FileNotFoundError(f"Label file not found for sample '{sample_name}' in {self.split_dir}")
 
         img = Image.open(label_path)
         arr = np.array(img)

@@ -15,10 +15,19 @@ from network.muse_net import (
 class EGHFNet(LandslideMUSENet):
     """MUSE-Net configured for Landslide Segmentation (RGB + LiDAR Topography)."""
 
-    def __init__(self, topo_in_channels=None, num_classes=None, use_graph=None):
+    def __init__(
+        self,
+        topo_in_channels=None,
+        num_classes=None,
+        use_graph=None,
+        pretrained_rgb_path=None,
+        pretrained_topo_path=None,
+    ):
         in_chans = config.TOPO_INPUT_CHANS if topo_in_channels is None else topo_in_channels
         classes = config.NUM_CLASSES if num_classes is None else num_classes
         graph = config.USE_GRAPH if use_graph is None else use_graph
+        rgb_ckpt = pretrained_rgb_path if pretrained_rgb_path is not None else getattr(config, "PRETRAINED_RGB_PATH", None)
+        topo_ckpt = pretrained_topo_path if pretrained_topo_path is not None else getattr(config, "PRETRAINED_TOPO_PATH", None)
 
         super().__init__(
             topo_in_channels=in_chans,
@@ -26,8 +35,8 @@ class EGHFNet(LandslideMUSENet):
             use_graph=graph,
             rgb_backbone=getattr(config, "RGB_BACKBONE", "b2"),
             topo_backbone=getattr(config, "TOPO_BACKBONE", "b0"),
-            pretrained_rgb_path=getattr(config, "PRETRAINED_RGB_PATH", None),
-            pretrained_topo_path=getattr(config, "PRETRAINED_TOPO_PATH", None),
+            pretrained_rgb_path=rgb_ckpt,
+            pretrained_topo_path=topo_ckpt,
         )
 
 

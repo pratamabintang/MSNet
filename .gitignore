@@ -61,6 +61,7 @@ runs/
 logs/
 txt_logs/
 *.log
+MUSE-Net-Landslide_*/
 
 # =============================================================================
 # Virtual Environments

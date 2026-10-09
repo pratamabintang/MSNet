@@ -18,16 +18,19 @@ class Config:
         self.TOPO_INPUT_CHANS = max(1, len([m for m in self.MODALITIES if m != "IMAGE"]))
 
         # Pretrained SegFormer weights
-        self.PRETRAINED_RGB_PATH = Path("./pretrained/mit_b2.pth")
-        self.PRETRAINED_TOPO_PATH = Path("./pretrained/mit_b0.pth")
+        drive_rgb = Path("/content/drive/MyDrive/project/MSNet/pretrained/b2")
+        drive_topo = Path("/content/drive/MyDrive/project/MSNet/pretrained/b0")
+        self.PRETRAINED_RGB_PATH = drive_rgb if drive_rgb.exists() else Path("./pretrained/mit_b2.pth")
+        self.PRETRAINED_TOPO_PATH = drive_topo if drive_topo.exists() else Path("./pretrained/mit_b0.pth")
 
-        # Output and artifact directories
-        self.RUNS_DIR = Path("./runs") / (self.PROJECT_NAME + self.VERSION_SUFFIX)
-        self.CKPT_DIR = Path("./checkpoints") / (self.PROJECT_NAME + self.VERSION_SUFFIX)
-        self.LOG_DIR = Path("./logs") / (self.PROJECT_NAME + self.VERSION_SUFFIX)
-        self.TXT_LOG_DIR = Path("./txt_logs") / (self.PROJECT_NAME + self.VERSION_SUFFIX)
+        # Output and artifact directories (all artifacts grouped in one subfolder)
+        self.RUNS_DIR = Path("./runs")
+        self.EXP_DIR = self.RUNS_DIR / (self.PROJECT_NAME + self.VERSION_SUFFIX)
+        self.CKPT_DIR = self.EXP_DIR / "checkpoints"
+        self.LOG_DIR = self.EXP_DIR / "logs"
+        self.TXT_LOG_DIR = self.EXP_DIR / "txt_logs"
 
-        for p in [self.RUNS_DIR, self.CKPT_DIR, self.LOG_DIR, self.TXT_LOG_DIR]:
+        for p in [self.EXP_DIR, self.CKPT_DIR, self.LOG_DIR, self.TXT_LOG_DIR]:
             p.mkdir(parents=True, exist_ok=True)
 
         self.LATEST_CKPT_PATH = self.CKPT_DIR / "latest_checkpoint.pth"
